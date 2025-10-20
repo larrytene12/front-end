@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Zombie Attack - One Button Shooter</title>
+<style>
+  :root{--bg:#0b1220;--panel:rgba(255,255,255,0.04);--accent:#00e6a8}
+  html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Arial;background:var(--bg);color:#e6eef3}
+  .wrap{max-width:900px;margin:24px auto;padding:14px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(0,0,0,0.12));border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.6)}
+  header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px}
+  canvas{display:block;margin:14px auto;background:linear-gradient(#123,#051018);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.6)}
+  .hud{display:flex;gap:12px;align-items:center;padding:8px 12px}
+  .panel{background:var(--panel);padding:6px 10px;border-radius:8px;font-size:14px}
+  button{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;color:#042024;font-weight:700;cursor:pointer}
+  .muted{background:transparent;color:#9fb3c2;border:1px solid rgba(255,255,255,0.03);padding:6px;border-radius:6px;cursor:pointer}
+  .overlay{position:absolute;left:0;top:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .screen{pointer-events:auto;background:rgba(2,6,23,0.82);padding:22px;border-radius:10px;text-align:center;max-width:520px;color:#d9f7ee}
+  .screen h1{margin:0 0 8px 0;font-size:34px}
+  .screen p{margin:6px 0 12px 0}
+  a.link{color:var(--accent);text-decoration:none;font-weight:700}
+  footer{display:flex;justify-content:space-between;padding:8px 12px;font-size:13px;color:#9fb3c2}
+</style>
+</head>
+<body>
+<div class="wrap" id="container">
+  <header>
+    <div><strong>Zombie Attack</strong> — One Button Shooter</div>
+    <div>Controls: <strong>Space</strong> or <strong>Click</strong></div>
+  </header>
+
+  <canvas id="game" width="800" height="520"></canvas>
+
+  <div class="hud">
+    <div class="panel">Level: <strong id="levelTxt">1</strong></div>
+    <div class="panel">Score: <strong id="scoreTxt">0</strong></div>
+    <div class="panel">Zombies left: <strong id="leftTxt">0</strong></div>
+    <div style="margin-left:auto" class="panel">Sound: <button id="muteBtn" class="muted">Mute</button></div>
+  </div>
+
+  <footer><div>Made for fun</div><div>Group</div></footer>
+</div>
+
+<div id="overlay" class="overlay" style="display:none">
+  <div id="screen" class="screen"></div>
+</div>
+
+<script>
+/* ------------------ Assets (inline SVG data URIs) ------------------ */
+const playerSVG = `data:image/svg+xml;utf8,${encodeURIComponent(`
+<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>
+  <circle cx='32' cy='32' r='28' fill='#00e6a8' />
+  <rect x='36' y='28' width='16' height='8' rx='2' fill='#042024' />
+</svg>`)}`;
+
+const zombieSVG = `data:image/svg+xml;utf8,${encodeURIComponent(`
+<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>
+  <ellipse cx='32' cy='34' rx='26' ry='20' fill='#7cd87d' />
+  <rect x='15' y='38' width='34' height='6' rx='3' fill='#2a2f24' />
+  <circle cx='22' cy='24' r='5' fill='#fff'/>
+  <circle cx='42' cy='24' r='5' fill='#fff'/>
+  <circle cx='22' cy='24' r='2' fill='#111'/>
+  <circle cx='42' cy='24' r='2' fill='#111'/>
+</svg>`)}`;
+
+/* ------------------ Setup ------------------ */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const screen = document.getElementById('screen');
+const levelTxt = document.getElementById('levelTxt');
+const scoreTxt = document.getElementById('scoreTxt');
+const leftTxt = document.getElementById('leftTxt');
+const muteBtn = document.getElementById('muteBtn');
+
+let W = canvas.width, H = canvas.height;
+let center = {x: W/6, y: H/2}; // player at left side
+let player = {x:center.x, y:center.y, r:26};
+let bullets = [];
+let zombies = [];
+let particles = [];
+let score = 0;
+let level = 1;
+let soundOn = true;
+let gameState = 'menu'; // 'Menu','Playing','Levelup','Victory','Lose'
+
+const levels = { // number of zombies per level increases by +5
+  1:5, 2:10, 3:15, 4:20, 5:25
+};
+const maxLevel = 5;
+
+/* ------------------ Audio (WebAudio API) ------------------ */
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+function ensureAudio(){ if(!audioCtx) audioCtx = new AudioCtx(); }
+function playBeep(freq, dur=0.06, type='sine', vol=0.09){
+  if(!soundOn) return;
+  ensureAudio();
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.value = vol;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  o.stop(audioCtx.currentTime + dur);
+}
+
+/* ------------------ Audio (Using Asset Files) ------------------ */
+const sShoot = new Audio("assets/shoot.wav");
+const sHit = new Audio("assets/hit.wav");
+const sVictory = new Audio("assets/victory.wav");
+const sLose = new Audio("assets/game_over.wav");
+
+function playShoot(){ if(soundOn){ sShoot.currentTime = 0; sShoot.play(); } }
+function playHit(){ if(soundOn){ sHit.currentTime = 0; sHit.play(); } }
+function playLevelUp(){ if(soundOn){ sVictory.currentTime = 0; sVictory.play(); } }
+function playLose(){ if(soundOn){ sLose.currentTime = 0; sLose.play(); } }
+
+
+/* ------------------ Images ------------------ */
+const imgPlayer = new Image(); imgPlayer.src = "assets/player.png";
+const imgZombie = new Image(); imgZombie.src = "assets/zombie.png";
+
+/* ------------------ Game functions ------------------ */
+function spawnZombiesForLevel(lv){
+  zombies = [];
+  const num = levels[lv] || (5 + (lv-1)*5);
+  for(let i=0;i<num;i++){
+    // spawn on right side with some vertical variation
+    let x = W + Math.random()*300;
+    let y = 40 + Math.random()*(H-80);
+    let speed = 0.6 + 0.12*lv + Math.random()*0.4;
+    zombies.push({x,y,size:40,speed,angle:0});
+  }
+  leftTxt.textContent = num;
+}
+
+function shoot(){
+  if(gameState !== 'playing') return;
+  // bullet fired horizontally (from player center)
+  bullets.push({x:player.x + player.r, y:player.y, dx:10, dy:0, r:6, life:120});
+  playShoot();
+}
+
+function update(dt){
+  if(gameState !== 'playing') return;
+  // update bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    let b = bullets[i]; b.x += b.dx; b.y += b.dy; b.life--;
+    if(b.life<=0 || b.x>W+50) bullets.splice(i,1);
+  }
+  // update zombies
+  for(let i=zombies.length-1;i>=0;i--){
+    let z = zombies[i];
+    // move toward left (player area) with slight vertical drift
+    let targetY = player.y;
+    let dirX = (player.x - z.x);
+    z.x += (dirX/Math.abs(dirX||1)) * z.speed; // move leftwards primarily
+    // simple Y move
+    z.y += (targetY - z.y) * 0.01 * (z.speed/0.6);
+    // collision with left side / player -> lose
+    if(z.x - z.size/2 <= player.x + player.r/2){
+      gameState = 'lose'; playLose(); showScreen('lose');
+      return;
+    }
+    // bullets collision
+    for(let bi=bullets.length-1;bi>=0;bi--){
+      let b = bullets[bi];
+      let dist = Math.hypot(b.x - z.x, b.y - z.y);
+      if(dist < z.size*0.5 + b.r){
+        // hit
+        bullets.splice(bi,1);
+        zombies.splice(i,1);
+        score += 10;
+        playHit();
+        spawnParticles(z.x, z.y, '#78ffb0');
+        break;
+      }
+    }
+  }
+
+  // particles update
+  for(let i=particles.length-1;i>=0;i--){
+    let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life--;
+    p.vy += 0.08;
+    if(p.life<=0) particles.splice(i,1);
+  }
+
+  // win condition for level
+  if(zombies.length === 0){
+    if(level >= maxLevel){
+      gameState = 'victory'; playLevelUp(); showScreen('victory');
+    } else {
+      gameState = 'levelup'; playLevelUp(); showScreen('levelup');
+    }
+  }
+
+  // update HUD
+  levelTxt.textContent = level;
+  scoreTxt.textContent = score;
+  leftTxt.textContent = zombies.length;
+}
+
+function spawnParticles(x,y,color){
+  for(let i=0;i<12;i++){
+    particles.push({x,y,vx:(Math.random()-0.5)*4, vy:(Math.random()-1.5)*4, life:20+Math.random()*20, color});
+  }
+}
+
+/* ------------------ Drawing ------------------ */
+function draw(){
+  // background
+  ctx.clearRect(0,0,W,H);
+  // subtle grid
+  ctx.fillStyle = '#071018'; ctx.fillRect(0,0,W,H);
+
+  // draw player (image)
+  ctx.drawImage(imgPlayer, player.x - 32, player.y - 32, 64, 64);
+
+  // bullets
+  bullets.forEach(b=>{
+    ctx.fillStyle = 'rgba(255,235,120,0.95)';
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill();
+  });
+
+  // zombies (image)
+  zombies.forEach(z=>{
+    ctx.save();
+    ctx.translate(z.x, z.y);
+    ctx.drawImage(imgZombie, -32, -32, 64, 64);
+    ctx.restore();
+  });
+
+  // particles
+  particles.forEach(p=>{
+    ctx.globalAlpha = Math.max(0, p.life/30);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+
+  // UI crosshair line to show direction
+  ctx.strokeStyle = 'rgba(200,255,230,0.12)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(player.x+player.r, player.y); ctx.lineTo(W, player.y); ctx.stroke();
+}
+
+/* ------------------ Overlay UI screens ------------------ */
+function showScreen(type){
+  overlay.style.display = 'flex';
+  if(type === 'menu'){
+    screen.innerHTML = `<h1>Zombie Rush</h1><p>One-button shooter. Shoot zombies coming from the right. Clear all zombies to complete the level.</p>
+      <div style="display:flex;gap:8px;justify-content:center"><button id="startBtn">Start Game</button><button id="howBtn" class="muted">How to Play</button></div>`;
+    document.getElementById('startBtn').onclick = ()=>{ overlay.style.display='none'; startGame(); };
+    document.getElementById('howBtn').onclick = ()=>{ screen.innerHTML = '<h1>How to Play</h1><p>Press <strong>Space</strong> or click to shoot. Defeat all zombies in a level to progress. If a zombie reaches the left side, you lose.</p><div style=\"display:flex;gap:8px;justify-content:center\"><button id=\"ok\">OK</button></div>'; document.getElementById('ok').onclick=()=>showScreen('menu'); };
+  } else if(type === 'levelup'){
+    screen.innerHTML = `<h1>Level ${level} Complete!</h1><p>Get ready for Level ${level+1}.</p><div style="display:flex;gap:8px;justify-content:center"><button id="nextBtn">Next Level</button></div>`;
+    document.getElementById('nextBtn').onclick = ()=>{ overlay.style.display='none'; level++; spawnZombiesForLevel(level); gameState='playing'; };
+  } else if(type === 'victory'){
+    screen.innerHTML = `<h1>Victory!</h1><p>You cleared all levels.<br/>Score: <strong>${score}</strong></p><div style="display:flex;gap:8px;justify-content:center"><button id="retry">Play Again</button></div>`;
+    document.getElementById('retry').onclick = ()=>{ overlay.style.display='none'; resetGame(); };
+  } else if(type === 'lose'){
+    screen.innerHTML = `<h1>Game Over</h1><p>A zombie reached you.<br/>Score: <strong>${score}</strong></p><div style="display:flex;gap:8px;justify-content:center"><button id="tryBtn">Retry</button></div>`;
+    document.getElementById('tryBtn').onclick = ()=>{ overlay.style.display='none'; resetGame(); };
+  }
+}
+
+/* ------------------ Game control ------------------ */
+function startGame(){
+  score = 0; level = 1; gameState = 'playing'; spawnZombiesForLevel(level); playLevelUp();
+}
+function resetGame(){ score=0; level=1; bullets=[]; zombies=[]; particles=[]; gameState='playing'; spawnZombiesForLevel(level); }
+function toggleSound(){ soundOn = !soundOn; muteBtn.textContent = soundOn ? 'Mute' : 'Unmute'; }
+muteBtn.onclick = toggleSound;
+
+/* ------------------ Input ------------------ */
+window.addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); shoot(); } if(e.code==='Enter' && (gameState==='lose' || gameState==='victory')) resetGame(); });
+canvas.addEventListener('mousedown', ()=>shoot());
+
+/* ------------------ Loop ------------------ */
+let last = 0;
+function loop(ts){
+  const dt = (ts - last)/1000; last = ts;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+
+/* ------------------ Init ------------------ */
+spawnZombiesForLevel(level);
+showScreen('menu');
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
